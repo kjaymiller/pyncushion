@@ -45,15 +45,17 @@ pin-versions
 
 This pins dependencies in `[project].dependencies`, `[project.optional-dependencies]`, and `[dependency-groups]`.
 
+By default, `pin-versions` runs in dry-run mode — it shows what would change without modifying the file. Use `--fix` to apply the pins.
+
 ### Options
 
 | Flag | Description |
 |---|---|
+| `--fix` | Apply changes to `pyproject.toml` (default is dry run) |
 | `--operator`, `-o` | Version pin operator (default: `==`). Supports `>=`, `~=`, etc. |
 | `--pyproject`, `-p` | Path to `pyproject.toml` (default: `./pyproject.toml`) |
 | `--venv` | Path to the virtual environment (default: `.venv`) |
 | `--pin-latest` | Pin uninstalled packages to their latest version on PyPI |
-| `--dry-run` | Preview changes without modifying the file |
 
 ### Pre-commit hook
 

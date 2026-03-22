@@ -21,7 +21,6 @@ from pin_versions.pin_versions import (
     get_latest_version,
     has_version_constraint,
     pin_dependency,
-    pin_list,
     resolve_missing_versions,
 )
 
@@ -108,24 +107,6 @@ class TestPinDependency:
         """'my_package' matches versions key 'my-package' via underscore-to-hyphen normalization."""
         failed = []
         assert pin_dependency("my_package", {"my-package": "1.0.0"}, "==", failed) == "my_package==1.0.0"
-
-
-class TestPinList:
-    """Tests for pin_list(deps, versions, operator, failed) -> None.
-
-    Mutates a tomlkit array in place, pinning bare deps and leaving
-    already-constrained deps unchanged.
-    """
-
-    def test_pins_unpinned_and_skips_pinned(self):
-        """Should pin bare deps and leave already-constrained deps unchanged."""
-        deps = tomlkit.array()
-        deps.append("requests")
-        deps.append("flask>=2.0")
-        failed = []
-        pin_list(deps, {"requests": "2.28.0"}, "==", failed)
-        assert deps[0] == "requests==2.28.0"
-        assert deps[1] == "flask>=2.0"
 
 
 class TestCollectUnpinnedDeps:

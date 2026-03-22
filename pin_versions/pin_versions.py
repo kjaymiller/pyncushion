@@ -102,19 +102,16 @@ def pin_dependency(dep: str, versions: dict[str, str], operator: str, failed: li
     return dep
 
 
-def pin_list(deps, versions: dict[str, str], operator: str, failed: list[str]) -> None:
-    """Pin all dependencies in a tomlkit array in place."""
-    for i, dep in enumerate(deps):
-        deps[i] = pin_dependency(dep, versions, operator, failed)
-
-
 def _add_section_rows(table: Table, group: str, deps, versions: dict[str, str], operator: str, failed: list[str]) -> None:
     """Pin deps in a section and add rows to the unified table."""
-    pin_list(deps, versions, operator, failed)
-    for dep in deps:
-        name = extract_package_name(str(dep))
+    for i, dep in enumerate(deps):
         if has_version_constraint(str(dep)):
-            version_part = str(dep)[len(name):]
+            continue
+        name = extract_package_name(str(dep))
+        deps[i] = pin_dependency(str(dep), versions, operator, failed)
+        pinned = str(deps[i])
+        if has_version_constraint(pinned):
+            version_part = pinned[len(name):]
             style = "green"
         else:
             version_part = "[unpinned]"
@@ -145,13 +142,10 @@ async def async_main(operator: str, pyproject: str, venv: str, pin_latest: bool,
 
     # Summary header
     total_deps = len(unpinned)
-    missing_count = len([name for name in unpinned if name not in versions])
     summary_table = Table(show_header=False, box=None, padding=(0, 1))
     summary_table.add_column("Label", style="bold", justify="right")
     summary_table.add_column("Value")
-    summary_table.add_row("Total:", str(total_deps))
-    missing_style = "red" if missing_count else "green"
-    summary_table.add_row("Unpinned:", Text(str(missing_count), style=missing_style))
+    summary_table.add_row("Total Unpinned:", str(total_deps))
 
     group_table = Table(show_header=False, box=None, padding=(0, 1))
     group_table.add_column("Group", style="bold", justify="left")
@@ -213,7 +207,7 @@ async def async_main(operator: str, pyproject: str, venv: str, pin_latest: bool,
         pyproject_path.write_text(tomlkit.dumps(data))
         console.print(f"[bold green]Updated {pyproject_path}[/bold green]")
     elif unpinned:
-        console.print("[bold red]Found unpinned dependencies. Use `pin-dependency --fix` to apply pins.[/bold red]")
+        console.print("[bold red]Found unpinned dependencies. Use `[orange]pin-versions[/orange] --fix` to apply pins.[/bold red]")
         raise SystemExit(1)
 
     if failed:
