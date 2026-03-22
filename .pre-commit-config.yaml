@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: pin-versions
+        name: pin-versions
+        description: Check that all dependencies in pyproject.toml are pinned to a version
+        entry: uv run pin_versions/pin_versions.py
+        language: system
+        files: pyproject\.toml$
+        pass_filenames: false

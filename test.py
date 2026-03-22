@@ -6,14 +6,14 @@ and the end-to-end workflow via async_main.
 """
 
 import json
+import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 import tomlkit
 
-from pin_versions import (
+from pin_versions.pin_versions import (
     async_main,
     collect_unpinned_deps,
     extract_package_name,
@@ -165,7 +165,7 @@ class TestGetInstalledVersions:
     When the venv path exists, passes --python to target that interpreter.
     """
 
-    def test_with_existing_venv(self, tmp_path):
+    def test_with_existing_venv(self, tmp_path, monkeypatch):
         """With a valid .venv dir, passes --python <venv>/bin/python and lowercases package names."""
         venv = tmp_path / ".venv"
         venv.mkdir()
@@ -177,22 +177,32 @@ class TestGetInstalledVersions:
             {"name": "Flask", "version": "2.3.0"},
         ])
 
-        with patch("pin_versions.subprocess.run") as mock_run:
-            mock_run.return_value.stdout = pip_output
-            result = get_installed_versions(venv)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=pip_output, stderr="")
+
+        monkeypatch.setattr("pin_versions.pin_versions.subprocess.run", fake_run)
+        result = get_installed_versions(venv)
 
         assert result == {"requests": "2.28.0", "flask": "2.3.0"}
-        assert "--python" in mock_run.call_args[0][0]
+        assert "--python" in calls[0]
 
-    def test_without_venv(self, tmp_path):
+    def test_without_venv(self, tmp_path, monkeypatch):
         """With a nonexistent venv path, omits --python and uses the default interpreter."""
         pip_output = json.dumps([{"name": "requests", "version": "2.28.0"}])
 
-        with patch("pin_versions.subprocess.run") as mock_run:
-            mock_run.return_value.stdout = pip_output
-            get_installed_versions(tmp_path / "nonexistent")
+        calls = []
 
-        assert "--python" not in mock_run.call_args[0][0]
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=pip_output, stderr="")
+
+        monkeypatch.setattr("pin_versions.pin_versions.subprocess.run", fake_run)
+        get_installed_versions(tmp_path / "nonexistent")
+
+        assert "--python" not in calls[0]
 
 
 class TestGetLatestVersion:
@@ -202,30 +212,26 @@ class TestGetLatestVersion:
     string on success (200) or raises httpx.HTTPStatusError on failure.
     """
 
-    @pytest.mark.asyncio
-    async def test_success(self):
+    async def test_success(self, httpx_mock):
         """PyPI returns 200 with {"info": {"version": "3.0.0"}} -> returns '3.0.0'."""
-        mock_response = httpx.Response(
-            200,
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/requests/json",
             json={"info": {"version": "3.0.0"}},
-            request=httpx.Request("GET", "https://pypi.org/pypi/requests/json"),
         )
 
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get.return_value = mock_response
+        async with httpx.AsyncClient() as client:
+            assert await get_latest_version(client, "requests") == "3.0.0"
 
-        assert await get_latest_version(client, "requests") == "3.0.0"
-
-    @pytest.mark.asyncio
-    async def test_not_found(self):
+    async def test_not_found(self, httpx_mock):
         """PyPI returns 404 for an unknown package -> raises httpx.HTTPStatusError."""
-        mock_response = httpx.Response(404, request=httpx.Request("GET", "https://pypi.org/pypi/nonexistent/json"))
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/nonexistent/json",
+            status_code=404,
+        )
 
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get.return_value = mock_response
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await get_latest_version(client, "nonexistent")
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(httpx.HTTPStatusError):
+                await get_latest_version(client, "nonexistent")
 
 
 class TestResolveMissingVersions:
@@ -235,36 +241,31 @@ class TestResolveMissingVersions:
     Returns a dict of {name: version} on success; raises on any failed lookup.
     """
 
-    @pytest.mark.asyncio
-    async def test_resolves_all_available(self):
+    async def test_resolves_all_available(self, httpx_mock):
         """['requests', 'flask'] -> {'requests': '2.31.0', 'flask': '3.0.0'}."""
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/requests/json",
+            json={"info": {"version": "2.31.0"}},
+        )
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/flask/json",
+            json={"info": {"version": "3.0.0"}},
+        )
 
-        async def mock_get(url):
-            version = "2.31.0" if "requests" in url else "3.0.0"
-            return httpx.Response(
-                200,
-                json={"info": {"version": version}},
-                request=httpx.Request("GET", url),
-            )
-
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get.side_effect = mock_get
-
-        result = await resolve_missing_versions(client, ["requests", "flask"])
+        async with httpx.AsyncClient() as client:
+            result = await resolve_missing_versions(client, ["requests", "flask"])
         assert result == {"requests": "2.31.0", "flask": "3.0.0"}
 
-    @pytest.mark.asyncio
-    async def test_raises_on_missing_package(self):
+    async def test_raises_on_missing_package(self, httpx_mock):
         """A 404 from PyPI propagates as httpx.HTTPStatusError."""
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/nonexistent/json",
+            status_code=404,
+        )
 
-        async def mock_get(url):
-            return httpx.Response(404, request=httpx.Request("GET", url))
-
-        client = AsyncMock(spec=httpx.AsyncClient)
-        client.get.side_effect = mock_get
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await resolve_missing_versions(client, ["nonexistent"])
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(httpx.HTTPStatusError):
+                await resolve_missing_versions(client, ["nonexistent"])
 
 
 class TestAsyncMain:
@@ -294,11 +295,10 @@ class TestAsyncMain:
         """Version mapping for test packages."""
         return {"requests": "2.28.0", "pytest": "7.4.0", "coverage": "7.3.0"}
 
-    @pytest.mark.asyncio
-    async def test_pins_all_sections(self, sample_pyproject, mock_versions, tmp_path):
+    async def test_pins_all_sections(self, sample_pyproject, mock_versions, tmp_path, monkeypatch):
         """Writes pinned versions to all three sections; leaves already-constrained deps untouched."""
-        with patch("pin_versions.get_installed_versions", return_value=mock_versions):
-            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, False)
+        monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
+        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, True)
 
         data = tomlkit.loads(sample_pyproject.read_text())
         assert data["project"]["dependencies"][0] == "requests==2.28.0"
@@ -306,54 +306,63 @@ class TestAsyncMain:
         assert data["project"]["optional-dependencies"]["dev"][0] == "pytest==7.4.0"
         assert data["dependency-groups"]["test"][0] == "coverage==7.3.0"
 
-    @pytest.mark.asyncio
-    async def test_dry_run_does_not_write(self, sample_pyproject, mock_versions, tmp_path):
-        """With dry_run=True, pyproject.toml content is identical before and after."""
+    async def test_dry_run_does_not_write(self, sample_pyproject, mock_versions, tmp_path, monkeypatch):
+        """With fix=False and unpinned deps, pyproject.toml is unchanged and SystemExit(1) is raised."""
         original = sample_pyproject.read_text()
 
-        with patch("pin_versions.get_installed_versions", return_value=mock_versions):
-            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, True)
+        monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
+        with pytest.raises(SystemExit):
+            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, False)
 
         assert sample_pyproject.read_text() == original
 
-    @pytest.mark.asyncio
-    async def test_custom_operator(self, sample_pyproject, mock_versions, tmp_path):
+    async def test_dry_run_passes_when_all_pinned(self, tmp_path, monkeypatch):
+        """With fix=False and all deps already pinned, no SystemExit is raised."""
+        content = tomlkit.dumps({
+            "project": {
+                "dependencies": ["requests==2.28.0", "flask>=2.0"],
+            },
+        })
+        path = tmp_path / "pyproject.toml"
+        path.write_text(content)
+
+        monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: {})
+        await async_main("==", str(path), str(tmp_path / ".venv"), False, False)
+
+    async def test_fix_writes(self, sample_pyproject, mock_versions, tmp_path, monkeypatch):
+        """With fix=True, pyproject.toml is updated with pinned versions."""
+        original = sample_pyproject.read_text()
+
+        monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
+        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, True)
+
+        assert sample_pyproject.read_text() != original
+
+    async def test_custom_operator(self, sample_pyproject, mock_versions, tmp_path, monkeypatch):
         """With operator='>=' pins as 'requests>=2.28.0' instead of 'requests==2.28.0'."""
-        with patch("pin_versions.get_installed_versions", return_value=mock_versions):
-            await async_main(">=", str(sample_pyproject), str(tmp_path / ".venv"), False, False)
+        monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
+        await async_main(">=", str(sample_pyproject), str(tmp_path / ".venv"), False, True)
 
         data = tomlkit.loads(sample_pyproject.read_text())
         assert data["project"]["dependencies"][0] == "requests>=2.28.0"
 
-    @pytest.mark.asyncio
-    async def test_exits_on_missing_versions(self, sample_pyproject, tmp_path):
+    async def test_exits_on_missing_versions(self, sample_pyproject, tmp_path, monkeypatch):
         """With an empty versions dict, all deps fail to resolve and SystemExit(1) is raised."""
-        with patch("pin_versions.get_installed_versions", return_value={}):
-            with pytest.raises(SystemExit):
-                await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, False)
+        monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: {})
+        with pytest.raises(SystemExit):
+            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, False)
 
-    @pytest.mark.asyncio
-    async def test_pin_latest_fetches_from_pypi(self, sample_pyproject, tmp_path):
+    async def test_pin_latest_fetches_from_pypi(self, sample_pyproject, tmp_path, monkeypatch, httpx_mock):
         """With pin_latest=True, 'coverage' (not installed) is fetched from PyPI and pinned to '7.3.0'."""
         installed = {"requests": "2.28.0", "pytest": "7.4.0"}
+        monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: installed)
 
-        async def mock_get(url):
-            return httpx.Response(
-                200,
-                json={"info": {"version": "7.3.0"}},
-                request=httpx.Request("GET", url),
-            )
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/coverage/json",
+            json={"info": {"version": "7.3.0"}},
+        )
 
-        with (
-            patch("pin_versions.get_installed_versions", return_value=installed),
-            patch("httpx.AsyncClient") as MockClient,
-        ):
-            mock_client = AsyncMock()
-            mock_client.get.side_effect = mock_get
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), True, False)
+        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), True, True)
 
         data = tomlkit.loads(sample_pyproject.read_text())
         assert data["dependency-groups"]["test"][0] == "coverage==7.3.0"
