@@ -22,3 +22,4 @@ dependencies = [
 pin-versions = "pin_versions:main"
 
 [tool.setuptools-scm]
+local_scheme = "no-local-version"
