@@ -2,6 +2,27 @@
 
 A CLI tool and pre-commit hook that pins all unpinned dependencies in `pyproject.toml` to their currently installed versions.
 
+## Why pin versions?
+
+Unpinned dependencies (e.g. `requests` instead of `requests==2.31.0`) mean your project silently picks up whatever version happens to be newest at install time. This causes real problems:
+
+- **Broken builds** -- a new release of a dependency can introduce breaking changes or bugs that suddenly fail your CI or production deploys, even though *your* code hasn't changed.
+- **"Works on my machine"** -- different team members install at different times and get different versions, leading to bugs that are impossible to reproduce.
+- **Non-reproducible deployments** -- deploying the same commit twice can produce different behavior if a dependency was updated between deploys.
+- **Silent security risk** -- without knowing exactly what you're running, auditing your dependency tree for vulnerabilities is guesswork.
+
+Pinning gives you control: upgrades happen when you choose, not when a package author publishes.
+
+## Why some dependencies are left unpinned
+
+`pin-versions` resolves versions by checking what is currently installed in your virtual environment. A dependency will remain unpinned if:
+
+- **It isn't installed** -- the package appears in `pyproject.toml` but is not present in the target virtual environment (e.g. an optional dependency you haven't installed locally).
+- **The package name doesn't match** -- the name in `pyproject.toml` differs from the distribution name (underscores vs hyphens, etc.) and can't be matched to an installed package.
+- **PyPI lookup fails** (when using `--pin-latest`) -- if the network request to PyPI errors out, the package is left as-is rather than guessing.
+
+In all of these cases, `pin-versions` reports the unpinned packages so you can address them. You can use `--pin-latest` to automatically fetch the latest version from PyPI for any package that isn't installed locally.
+
 ## Installation
 
 ```bash
