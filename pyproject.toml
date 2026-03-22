@@ -22,6 +22,3 @@ dependencies = [
 pin-versions = "pin_versions:main"
 
 [tool.setuptools-scm]
-
-[tool.setuptools]
-py-modules = ["pin_versions"]
