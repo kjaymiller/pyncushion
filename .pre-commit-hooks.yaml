@@ -1,7 +1,7 @@
 - id: pin-versions
   name: pin-versions
   description: Check that all dependencies in pyproject.toml are pinned to a version
-  entry: uvx pin_versions
-  language: system
+  entry: pin-versions
+  language: python
   files: pyproject\.toml$
   pass_filenames: false
