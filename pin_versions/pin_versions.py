@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 import httpx
 import tomlkit
+from packaging.version import Version, InvalidVersion
 from rich.console import Console, Group as RichGroup
 from rich.table import Table
 from rich.panel import Panel
@@ -35,11 +36,33 @@ def get_installed_versions(venv: Path) -> dict[str, str]:
     return {pkg["name"].lower(): pkg["version"] for pkg in packages}
 
 
-async def get_latest_version(client: httpx.AsyncClient, package_name: str) -> str:
-    """Get the latest version of a package from PyPI."""
+async def get_latest_version(client: httpx.AsyncClient, package_name: str, prereleases: bool = False) -> str:
+    """Get the latest version of a package from PyPI.
+
+    By default, only stable (non-prerelease) versions are considered.
+    Set prereleases=True to include pre-release versions.
+    """
     response = await client.get(f"https://pypi.org/pypi/{package_name}/json")
     response.raise_for_status()
-    return response.json()["info"]["version"]
+    data = response.json()
+
+    if prereleases:
+        return data["info"]["version"]
+
+    # Filter to stable versions only
+    stable_versions = []
+    for ver_str in data["releases"]:
+        try:
+            v = Version(ver_str)
+            if not v.is_prerelease:
+                stable_versions.append(v)
+        except InvalidVersion:
+            continue
+
+    if not stable_versions:
+        return data["info"]["version"]
+
+    return str(max(stable_versions))
 
 
 def extract_package_name(dep: str) -> str:
@@ -55,9 +78,10 @@ def has_version_constraint(dep: str) -> bool:
 async def resolve_missing_versions(
     client: httpx.AsyncClient,
     missing: list[str],
+    prereleases: bool = False,
 ) -> dict[str, str]:
     """Fetch latest versions for all missing packages concurrently."""
-    tasks = {name: get_latest_version(client, name) for name in missing}
+    tasks = {name: get_latest_version(client, name, prereleases=prereleases) for name in missing}
     results = {}
     for name, coro in tasks.items():
         results[name] = await coro
@@ -119,7 +143,7 @@ def _add_section_rows(table: Table, group: str, deps, versions: dict[str, str], 
         table.add_row(group, name, Text(version_part, style=style))
 
 
-async def async_main(operator: str, pyproject: str, venv: str, pin_latest: bool, fix: bool):
+async def async_main(operator: str, pyproject: str, venv: str, fix: bool, prereleases: bool = False):
     pyproject_path = Path(pyproject)
     data = tomlkit.loads(pyproject_path.read_text())
     versions = get_installed_versions(Path(venv))
@@ -127,18 +151,17 @@ async def async_main(operator: str, pyproject: str, venv: str, pin_latest: bool,
     unpinned = collect_unpinned_deps(data)
     errors: list[tuple[str, str]] = []
 
-    if pin_latest:
-        missing = [name for name in unpinned if name not in versions]
-        if missing:
-            console.print(f"Looking up latest versions for [bold]{len(missing)}[/bold] uninstalled packages...")
-            try:
-                async with httpx.AsyncClient() as client:
-                    latest = await resolve_missing_versions(client, missing)
-                versions.update(latest)
-            except httpx.HTTPStatusError as e:
-                errors.append(("PyPI lookup", f"HTTP {e.response.status_code} for {e.request.url}"))
-            except httpx.RequestError as e:
-                errors.append(("PyPI lookup", str(e)))
+    missing = [name for name in unpinned if name not in versions]
+    if missing:
+        console.print(f"Looking up latest versions for [bold]{len(missing)}[/bold] uninstalled packages...")
+        try:
+            async with httpx.AsyncClient() as client:
+                latest = await resolve_missing_versions(client, missing, prereleases=prereleases)
+            versions.update(latest)
+        except httpx.HTTPStatusError as e:
+            errors.append(("PyPI lookup", f"HTTP {e.response.status_code} for {e.request.url}"))
+        except httpx.RequestError as e:
+            errors.append(("PyPI lookup", str(e)))
 
     # Summary header
     total_deps = len(unpinned)
@@ -218,11 +241,11 @@ async def async_main(operator: str, pyproject: str, venv: str, pin_latest: bool,
 @click.option("--operator", "-o", default="==", help="Version pin operator (e.g. ==, >=, ~=)")
 @click.option("--pyproject", "-p", default="pyproject.toml", type=click.Path(exists=True), help="Path to pyproject.toml")
 @click.option("--venv", default=".venv", type=click.Path(), help="Path to the project virtualenv")
-@click.option("--pin-latest", is_flag=True, default=False, help="Pin uninstalled packages to their latest PyPI version")
 @click.option("--fix", is_flag=True, default=False, help="Apply changes to pyproject.toml (default is dry run)")
-def main(operator: str, pyproject: str, venv: str, pin_latest: bool, fix: bool):
+@click.option("--prereleases", is_flag=True, default=False, help="Include pre-release versions when fetching from PyPI")
+def main(operator: str, pyproject: str, venv: str, fix: bool, prereleases: bool):
     """Pin all unpinned dependencies in pyproject.toml to their installed versions."""
-    asyncio.run(async_main(operator, pyproject, venv, pin_latest, fix))
+    asyncio.run(async_main(operator, pyproject, venv, fix, prereleases))
 
 
 if __name__ == "__main__":

@@ -13,15 +13,26 @@ Unpinned dependencies (e.g. `requests` instead of `requests==2.31.0`) mean your 
 
 Pinning gives you control: upgrades happen when you choose, not when a package author publishes.
 
-## Why some dependencies are left unpinned
+## How versions are resolved
 
-`pin-versions` resolves versions by checking what is currently installed in your virtual environment. A dependency will remain unpinned if:
+`pin-versions` first checks what is currently installed in your virtual environment. For any unpinned package that isn't installed locally, the latest version is automatically fetched from PyPI.
 
-- **It isn't installed** -- the package appears in `pyproject.toml` but is not present in the target virtual environment (e.g. an optional dependency you haven't installed locally).
+A dependency will remain unpinned if:
+
 - **The package name doesn't match** -- the name in `pyproject.toml` differs from the distribution name (underscores vs hyphens, etc.) and can't be matched to an installed package.
-- **PyPI lookup fails** (when using `--pin-latest`) -- if the network request to PyPI errors out, the package is left as-is rather than guessing.
+- **PyPI lookup fails** -- if the network request to PyPI errors out, the package is left as-is rather than guessing.
 
-In all of these cases, `pin-versions` reports the unpinned packages so you can address them. You can use `--pin-latest` to automatically fetch the latest version from PyPI for any package that isn't installed locally.
+In all of these cases, `pin-versions` reports the unpinned packages so you can address them.
+
+### Pre-release versions
+
+When fetching versions from PyPI, only stable (non-pre-release) versions are considered by default. Pre-release versions (alpha, beta, release candidates, dev builds) are filtered out. If you need to pin to a pre-release version, pass the `--prereleases` flag:
+
+```bash
+pin-versions --prereleases --fix
+```
+
+If a package has *only* pre-release versions on PyPI, `pin-versions` will fall back to the latest available version regardless of the `--prereleases` flag.
 
 ## Installation
 
@@ -55,7 +66,7 @@ By default, `pin-versions` runs in dry-run mode — it shows what would change w
 | `--operator`, `-o` | Version pin operator (default: `==`). Supports `>=`, `~=`, etc. |
 | `--pyproject`, `-p` | Path to `pyproject.toml` (default: `./pyproject.toml`) |
 | `--venv` | Path to the virtual environment (default: `.venv`) |
-| `--pin-latest` | Pin uninstalled packages to their latest version on PyPI |
+| `--prereleases` | Include pre-release versions when fetching from PyPI |
 
 ### Pre-commit hook
 

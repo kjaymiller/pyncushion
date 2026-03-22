@@ -194,14 +194,56 @@ class TestGetLatestVersion:
     """
 
     async def test_success(self, httpx_mock):
-        """PyPI returns 200 with {"info": {"version": "3.0.0"}} -> returns '3.0.0'."""
+        """PyPI returns 200 with stable releases -> returns latest stable version."""
         httpx_mock.add_response(
             url="https://pypi.org/pypi/requests/json",
-            json={"info": {"version": "3.0.0"}},
+            json={
+                "info": {"version": "3.0.0"},
+                "releases": {"2.28.0": [], "3.0.0": []},
+            },
         )
 
         async with httpx.AsyncClient() as client:
             assert await get_latest_version(client, "requests") == "3.0.0"
+
+    async def test_filters_prereleases_by_default(self, httpx_mock):
+        """When prereleases=False (default), pre-release versions are excluded."""
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/requests/json",
+            json={
+                "info": {"version": "3.0.0rc1"},
+                "releases": {"2.28.0": [], "3.0.0rc1": [], "2.31.0": []},
+            },
+        )
+
+        async with httpx.AsyncClient() as client:
+            assert await get_latest_version(client, "requests") == "2.31.0"
+
+    async def test_includes_prereleases_when_requested(self, httpx_mock):
+        """When prereleases=True, the info.version (which may be a pre-release) is returned."""
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/requests/json",
+            json={
+                "info": {"version": "3.0.0rc1"},
+                "releases": {"2.28.0": [], "3.0.0rc1": []},
+            },
+        )
+
+        async with httpx.AsyncClient() as client:
+            assert await get_latest_version(client, "requests", prereleases=True) == "3.0.0rc1"
+
+    async def test_falls_back_to_info_version_when_no_stable(self, httpx_mock):
+        """When all releases are pre-releases, falls back to info.version."""
+        httpx_mock.add_response(
+            url="https://pypi.org/pypi/requests/json",
+            json={
+                "info": {"version": "1.0.0a1"},
+                "releases": {"1.0.0a1": [], "1.0.0b1": []},
+            },
+        )
+
+        async with httpx.AsyncClient() as client:
+            assert await get_latest_version(client, "requests") == "1.0.0a1"
 
     async def test_not_found(self, httpx_mock):
         """PyPI returns 404 for an unknown package -> raises httpx.HTTPStatusError."""
@@ -226,11 +268,11 @@ class TestResolveMissingVersions:
         """['requests', 'flask'] -> {'requests': '2.31.0', 'flask': '3.0.0'}."""
         httpx_mock.add_response(
             url="https://pypi.org/pypi/requests/json",
-            json={"info": {"version": "2.31.0"}},
+            json={"info": {"version": "2.31.0"}, "releases": {"2.31.0": []}},
         )
         httpx_mock.add_response(
             url="https://pypi.org/pypi/flask/json",
-            json={"info": {"version": "3.0.0"}},
+            json={"info": {"version": "3.0.0"}, "releases": {"3.0.0": []}},
         )
 
         async with httpx.AsyncClient() as client:
@@ -250,7 +292,7 @@ class TestResolveMissingVersions:
 
 
 class TestAsyncMain:
-    """Integration tests for async_main(operator, pyproject, venv, pin_latest, dry_run).
+    """Integration tests for async_main(operator, pyproject, venv, fix, prereleases).
 
     Exercises the full workflow: reading pyproject.toml, resolving versions,
     pinning across all dependency sections, and writing (or skipping) the result.
@@ -279,7 +321,7 @@ class TestAsyncMain:
     async def test_pins_all_sections(self, sample_pyproject, mock_versions, tmp_path, monkeypatch):
         """Writes pinned versions to all three sections; leaves already-constrained deps untouched."""
         monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
-        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, True)
+        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), True)
 
         data = tomlkit.loads(sample_pyproject.read_text())
         assert data["project"]["dependencies"][0] == "requests==2.28.0"
@@ -293,7 +335,7 @@ class TestAsyncMain:
 
         monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
         with pytest.raises(SystemExit):
-            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, False)
+            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False)
 
         assert sample_pyproject.read_text() == original
 
@@ -308,42 +350,44 @@ class TestAsyncMain:
         path.write_text(content)
 
         monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: {})
-        await async_main("==", str(path), str(tmp_path / ".venv"), False, False)
+        await async_main("==", str(path), str(tmp_path / ".venv"), False)
 
     async def test_fix_writes(self, sample_pyproject, mock_versions, tmp_path, monkeypatch):
         """With fix=True, pyproject.toml is updated with pinned versions."""
         original = sample_pyproject.read_text()
 
         monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
-        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, True)
+        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), True)
 
         assert sample_pyproject.read_text() != original
 
     async def test_custom_operator(self, sample_pyproject, mock_versions, tmp_path, monkeypatch):
         """With operator='>=' pins as 'requests>=2.28.0' instead of 'requests==2.28.0'."""
         monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: mock_versions)
-        await async_main(">=", str(sample_pyproject), str(tmp_path / ".venv"), False, True)
+        await async_main(">=", str(sample_pyproject), str(tmp_path / ".venv"), True)
 
         data = tomlkit.loads(sample_pyproject.read_text())
         assert data["project"]["dependencies"][0] == "requests>=2.28.0"
 
-    async def test_exits_on_missing_versions(self, sample_pyproject, tmp_path, monkeypatch):
-        """With an empty versions dict, all deps fail to resolve and SystemExit(1) is raised."""
+    async def test_exits_on_missing_versions(self, sample_pyproject, tmp_path, monkeypatch, httpx_mock):
+        """With an empty versions dict and PyPI failure, all deps fail to resolve and SystemExit(1) is raised."""
         monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: {})
+        # The first lookup raises HTTPStatusError, which is caught and aborts the batch
+        httpx_mock.add_response(status_code=404)
         with pytest.raises(SystemExit):
-            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False, False)
+            await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), False)
 
-    async def test_pin_latest_fetches_from_pypi(self, sample_pyproject, tmp_path, monkeypatch, httpx_mock):
-        """With pin_latest=True, 'coverage' (not installed) is fetched from PyPI and pinned to '7.3.0'."""
+    async def test_fetches_from_pypi_for_uninstalled(self, sample_pyproject, tmp_path, monkeypatch, httpx_mock):
+        """Uninstalled package 'coverage' is fetched from PyPI and pinned to '7.3.0'."""
         installed = {"requests": "2.28.0", "pytest": "7.4.0"}
         monkeypatch.setattr("pin_versions.pin_versions.get_installed_versions", lambda _: installed)
 
         httpx_mock.add_response(
             url="https://pypi.org/pypi/coverage/json",
-            json={"info": {"version": "7.3.0"}},
+            json={"info": {"version": "7.3.0"}, "releases": {"7.3.0": []}},
         )
 
-        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), True, True)
+        await async_main("==", str(sample_pyproject), str(tmp_path / ".venv"), True)
 
         data = tomlkit.loads(sample_pyproject.read_text())
         assert data["dependency-groups"]["test"][0] == "coverage==7.3.0"
