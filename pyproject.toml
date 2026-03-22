@@ -32,6 +32,6 @@ test = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
-[tool.setuptools-scm]
+[tool.setuptools_scm]
 local_scheme = "no-local-version"
 
